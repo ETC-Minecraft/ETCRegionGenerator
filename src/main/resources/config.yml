@@ -3,16 +3,24 @@
 
 generation:
   # Maximum number of chunk generation requests active at the same time.
-  # Lower = less impact on TPS. Higher = faster generation.
-  # Recommended range: 4 – 16
-  max-concurrent-chunks: 8
+  # The feed loop blocks when this limit is reached and resumes as region
+  # threads finish each chunk — no fixed sleep, pure semaphore control.
+  #
+  # Tuning guide:
+  #   low-end box (2-4 cores) : 8  – 16
+  #   mid-range   (6-8 cores) : 16 – 32   ← default
+  #   high-end   (12+ cores)  : 32 – 64
+  #
+  # Raise this if generation feels slow; lower it if you see TPS drops.
+  max-concurrent-chunks: 24
 
-  # How many chunks to queue per async scheduler tick (20 ticks = 1 second).
-  # This controls the "feed rate" — reduce if you see TPS drops.
-  chunks-per-tick: 4
+  # Optional delay (milliseconds) inserted between each chunk submission.
+  # 0 = disabled (recommended — lets `max-concurrent-chunks` do all throttling).
+  # Set to e.g. 5 only if you have very low TPS during generation.
+  tick-delay-ms: 0
 
   # Whether to skip chunks that already exist in a region file.
-  # Set to false to force re-generation (useful after terrain changes).
+  # Set to false to force re-generation (useful after terrain/datapack changes).
   skip-existing: true
 
   # Auto-save progress to disk so generation can resume after a restart.

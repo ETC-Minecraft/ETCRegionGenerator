@@ -34,8 +34,8 @@ public final class ETCRegionGenerator extends JavaPlugin {
         }
 
         getLogger().info("ETCRegionGenerator enabled — Folia edition");
-        getLogger().info("Max concurrent chunks : " + getConfig().getInt("generation.max-concurrent-chunks", 8));
-        getLogger().info("Chunks per tick        : " + getConfig().getInt("generation.chunks-per-tick", 4));
+        getLogger().info("Max concurrent chunks : " + getConfig().getInt("generation.max-concurrent-chunks", 24));
+        getLogger().info("Tick delay ms         : " + getConfig().getInt("generation.tick-delay-ms", 0));
     }
 
     @Override

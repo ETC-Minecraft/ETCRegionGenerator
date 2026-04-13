@@ -58,7 +58,7 @@ public final class GenerationTask {
         this.area          = area;
         this.initiatorName = initiatorName;
 
-        int maxConcurrent = plugin.getConfig().getInt("generation.max-concurrent-chunks", 8);
+        int maxConcurrent = plugin.getConfig().getInt("generation.max-concurrent-chunks", 24);
         this.semaphore = new Semaphore(maxConcurrent);
     }
 
@@ -75,8 +75,9 @@ public final class GenerationTask {
 
         startedAt = (startedAt == null) ? Instant.now() : startedAt;
 
-        int chunksPerTick = plugin.getConfig().getInt("generation.chunks-per-tick", 4);
         boolean skipExisting = plugin.getConfig().getBoolean("generation.skip-existing", true);
+        int maxConcurrent    = plugin.getConfig().getInt("generation.max-concurrent-chunks", 24);
+        int tickDelayMs      = plugin.getConfig().getInt("generation.tick-delay-ms", 0);
 
         List<ChunkArea.ChunkCoord> chunks = area.getChunks();
         int total = chunks.size();
@@ -85,43 +86,34 @@ public final class GenerationTask {
             int index = startIndex;
 
             while (index < total && state.get() == TaskState.RUNNING) {
+                ChunkArea.ChunkCoord coord = chunks.get(index);
+                index++;
 
-                // Rate-limit: advance `chunksPerTick` slots, then sleep one tick (~50 ms)
-                int batchEnd = Math.min(index + chunksPerTick, total);
-                int scheduled = 0;
-
-                while (index < batchEnd) {
-                    ChunkArea.ChunkCoord coord = chunks.get(index);
-                    index++;
-
-                    // Skip already-existing chunks (fast path: check file on async thread)
-                    if (skipExisting && world.isChunkGenerated(coord.x(), coord.z())) {
-                        completed.incrementAndGet();
-                        continue;
-                    }
-
-                    try {
-                        semaphore.acquire();
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        state.set(TaskState.CANCELLED);
-                        return;
-                    }
-
-                    scheduled++;
-                    final int finalIndex = index;
-
-                    // Schedule generation on the correct region thread
-                    plugin.getServer().getRegionScheduler().execute(
-                        plugin, world, coord.x(), coord.z(),
-                        () -> generateChunk(coord, finalIndex, total)
-                    );
+                // Skip already-generated chunks (IO check on async thread — fast path)
+                if (skipExisting && world.isChunkGenerated(coord.x(), coord.z())) {
+                    completed.incrementAndGet();
+                    continue;
                 }
 
-                // If we scheduled any chunks this batch, sleep ~1 tick before next batch
-                if (scheduled > 0) {
+                // Acquire a concurrency slot — blocks until a region thread finishes one
+                try {
+                    semaphore.acquire();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    state.set(TaskState.CANCELLED);
+                    return;
+                }
+
+                // Dispatch to the correct Folia region thread
+                plugin.getServer().getRegionScheduler().execute(
+                    plugin, world, coord.x(), coord.z(),
+                    () -> generateChunk(coord, total)
+                );
+
+                // Optional per-chunk delay for TPS-sensitive servers (0 = disabled)
+                if (tickDelayMs > 0) {
                     try {
-                        Thread.sleep(50);
+                        Thread.sleep(tickDelayMs);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         break;
@@ -129,9 +121,9 @@ public final class GenerationTask {
                 }
             }
 
-            // Feed loop ended — wait for all in-flight chunks to finish
+            // Feed loop done — drain all in-flight chunks before marking finished
             try {
-                semaphore.acquire(plugin.getConfig().getInt("generation.max-concurrent-chunks", 8));
+                semaphore.acquire(maxConcurrent);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -167,7 +159,7 @@ public final class GenerationTask {
     //  Chunk generation (runs on region thread)
     // -------------------------------------------------------------------------
 
-    private void generateChunk(ChunkArea.ChunkCoord coord, int idx, int total) {
+    private void generateChunk(ChunkArea.ChunkCoord coord, int total) {
         try {
             if (state.get() == TaskState.CANCELLED) {
                 semaphore.release();
