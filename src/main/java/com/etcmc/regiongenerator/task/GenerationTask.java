@@ -62,7 +62,7 @@ public final class GenerationTask {
         this.area          = area;
         this.initiatorName = initiatorName;
 
-        this.maxConcurrent = plugin.getConfig().getInt("generation.max-concurrent-chunks", 24);
+        this.maxConcurrent = plugin.getConfig().getInt("generation.max-concurrent-chunks", 64);
         this.semaphore     = new Semaphore(maxConcurrent);
     }
 
@@ -122,7 +122,11 @@ public final class GenerationTask {
                      .thenAccept(chunk -> {
                          try {
                              if (chunk == null) { failed.incrementAndGet(); return; }
-                             chunk.unload(true); // save to .mca, evict from RAM
+                             // Do NOT call chunk.unload() from here — on Folia that call
+                             // must happen on the region thread; calling it from a
+                             // CompletableFuture callback thread causes contention.
+                             // Folia's own eviction policy will save and unload the chunk
+                             // naturally once it is no longer in the active region window.
                              int done = completed.incrementAndGet();
                              broadcastProgressIfDue(done, total);
                          } catch (Exception ex) {

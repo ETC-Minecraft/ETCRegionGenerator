@@ -3,16 +3,16 @@
 
 generation:
   # Maximum number of chunk generation requests active at the same time.
-  # The feed loop blocks when this limit is reached and resumes as region
-  # threads finish each chunk — no fixed sleep, pure semaphore control.
+  # The feed loop blocks when this limit is reached and resumes as completions arrive.
   #
   # Tuning guide:
-  #   low-end box (2-4 cores) : 8  – 16
-  #   mid-range   (6-8 cores) : 16 – 32   ← default
-  #   high-end   (12+ cores)  : 32 – 64
+  #   low-end box (2-4 cores) : 16 – 32
+  #   mid-range   (6-8 cores) : 32 – 64   ← default
+  #   high-end   (12+ cores)  : 64 – 128
   #
-  # Raise this if generation feels slow; lower it if you see TPS drops.
-  max-concurrent-chunks: 24
+  # Note: Minecraft's terrain generator is CPU-bound. Raising this beyond the
+  # number of available Folia worker threads won't help.
+  max-concurrent-chunks: 64
 
   # Optional delay (milliseconds) inserted between each chunk submission.
   # 0 = disabled (recommended — lets `max-concurrent-chunks` do all throttling).
