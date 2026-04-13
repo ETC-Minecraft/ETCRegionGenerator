@@ -1,0 +1,27 @@
+# ETCRegionGenerator Configuration
+# Folia-native region pre-generator
+
+generation:
+  # Maximum number of chunk generation requests active at the same time.
+  # Lower = less impact on TPS. Higher = faster generation.
+  # Recommended range: 4 – 16
+  max-concurrent-chunks: 8
+
+  # How many chunks to queue per async scheduler tick (20 ticks = 1 second).
+  # This controls the "feed rate" — reduce if you see TPS drops.
+  chunks-per-tick: 4
+
+  # Whether to skip chunks that already exist in a region file.
+  # Set to false to force re-generation (useful after terrain changes).
+  skip-existing: true
+
+  # Auto-save progress to disk so generation can resume after a restart.
+  auto-save-progress: true
+
+  # How often (in seconds) progress is written to disk.
+  auto-save-interval: 30
+
+messages:
+  # Use MiniMessage format (https://docs.advntr.dev/minimessage)
+  prefix: "<dark_gray>[<gradient:#00e0ff:#00ff99>ETC<white>RGen</gradient>]</dark_gray> "
+  progress-broadcast-interval: 60   # seconds between automatic progress broadcasts (0 = disabled)

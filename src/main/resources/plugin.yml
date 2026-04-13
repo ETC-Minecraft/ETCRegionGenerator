@@ -1,0 +1,25 @@
+name: ETCRegionGenerator
+version: '${project.version}'
+main: com.etcmc.regiongenerator.ETCRegionGenerator
+api-version: '1.21'
+folia-supported: true
+description: Folia-native region pre-generator — writes .mca files to disk
+authors:
+  - ETCMC
+
+commands:
+  etcgen:
+    description: ETCRegionGenerator main command
+    usage: /etcgen <start|stop|pause|resume|status|cancel> [args]
+    permission: etcgen.use
+    aliases:
+      - regiongen
+      - rgen
+
+permissions:
+  etcgen.use:
+    description: Allows use of all ETCRegionGenerator commands
+    default: op
+  etcgen.admin:
+    description: Admin override (cancel other tasks, reload config)
+    default: op
