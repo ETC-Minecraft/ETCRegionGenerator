@@ -4,7 +4,6 @@ import com.etcmc.regiongenerator.ETCRegionGenerator;
 import com.etcmc.regiongenerator.util.MessageUtil;
 import com.etcmc.regiongenerator.util.ProgressBar;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
-import org.bukkit.Chunk;
 import org.bukkit.World;
 import org.bukkit.command.CommandSender;
 
@@ -19,11 +18,15 @@ import java.util.logging.Level;
 /**
  * Represents one active (or paused) region pre-generation job.
  *
- * <p><b>Threading model (Folia):</b>
+ * <p><b>Threading model:</b>
  * <ul>
- *   <li>The feed loop runs on an async thread (AsyncScheduler).</li>
- *   <li>Each chunk is loaded/generated on its own region thread (RegionScheduler).</li>
- *   <li>After loading, the chunk is force-unloaded (saved to disk) on the same region thread.</li>
+ *   <li>Feed loop runs on a Folia AsyncScheduler thread.</li>
+ *   <li>Each chunk is requested via {@link World#getChunkAtAsync} — Paper's internal
+ *       async chunk pipeline distributes work across all available worker threads,
+ *       allowing chunks across ALL regions to generate simultaneously (unlike
+ *       RegionScheduler which serialises work per-region-thread).</li>
+ *   <li>On CompletableFuture completion the chunk is unloaded and saved to disk.</li>
+ *   <li>A {@link Semaphore} caps in-flight requests to avoid overwhelming the server.</li>
  * </ul>
  */
 public final class GenerationTask {
@@ -45,7 +48,8 @@ public final class GenerationTask {
     // Folia scheduler handle for the feed loop
     private volatile ScheduledTask feedTask;
 
-    // Semaphore to cap concurrent region-thread requests
+    // Caps how many getChunkAtAsync calls are in-flight simultaneously
+    private final int maxConcurrent;
     private final Semaphore semaphore;
 
     private Instant startedAt;
@@ -58,8 +62,8 @@ public final class GenerationTask {
         this.area          = area;
         this.initiatorName = initiatorName;
 
-        int maxConcurrent = plugin.getConfig().getInt("generation.max-concurrent-chunks", 24);
-        this.semaphore = new Semaphore(maxConcurrent);
+        this.maxConcurrent = plugin.getConfig().getInt("generation.max-concurrent-chunks", 24);
+        this.semaphore     = new Semaphore(maxConcurrent);
     }
 
     // -------------------------------------------------------------------------
@@ -76,7 +80,6 @@ public final class GenerationTask {
         startedAt = (startedAt == null) ? Instant.now() : startedAt;
 
         boolean skipExisting = plugin.getConfig().getBoolean("generation.skip-existing", true);
-        int maxConcurrent    = plugin.getConfig().getInt("generation.max-concurrent-chunks", 24);
         int tickDelayMs      = plugin.getConfig().getInt("generation.tick-delay-ms", 0);
 
         List<ChunkArea.ChunkCoord> chunks = area.getChunks();
@@ -89,13 +92,13 @@ public final class GenerationTask {
                 ChunkArea.ChunkCoord coord = chunks.get(index);
                 index++;
 
-                // Skip already-generated chunks (IO check on async thread — fast path)
+                // Fast path: skip chunks already saved to disk
                 if (skipExisting && world.isChunkGenerated(coord.x(), coord.z())) {
                     completed.incrementAndGet();
                     continue;
                 }
 
-                // Acquire a concurrency slot — blocks until a region thread finishes one
+                // Block until a concurrency slot is free
                 try {
                     semaphore.acquire();
                 } catch (InterruptedException e) {
@@ -104,24 +107,50 @@ public final class GenerationTask {
                     return;
                 }
 
-                // Dispatch to the correct Folia region thread
-                plugin.getServer().getRegionScheduler().execute(
-                    plugin, world, coord.x(), coord.z(),
-                    () -> generateChunk(coord, total)
-                );
+                if (state.get() != TaskState.RUNNING) {
+                    semaphore.release();
+                    break;
+                }
 
-                // Optional per-chunk delay for TPS-sensitive servers (0 = disabled)
+                // -----------------------------------------------------------
+                // getChunkAtAsync feeds Paper's internal chunk-generation pool
+                // directly. Multiple chunks across ALL regions are generated
+                // concurrently — unlike RegionScheduler which serialises work
+                // to one thread per region.
+                // -----------------------------------------------------------
+                world.getChunkAtAsync(coord.x(), coord.z())
+                     .thenAccept(chunk -> {
+                         try {
+                             if (chunk == null) { failed.incrementAndGet(); return; }
+                             chunk.unload(true); // save to .mca, evict from RAM
+                             int done = completed.incrementAndGet();
+                             broadcastProgressIfDue(done, total);
+                         } catch (Exception ex) {
+                             failed.incrementAndGet();
+                             plugin.getLogger().log(Level.WARNING,
+                                 "[ETCRegionGenerator] Failed chunk ("
+                                 + coord.x() + "," + coord.z() + "): " + ex.getMessage());
+                         } finally {
+                             semaphore.release();
+                         }
+                     })
+                     .exceptionally(ex -> {
+                         failed.incrementAndGet();
+                         semaphore.release();
+                         plugin.getLogger().log(Level.WARNING,
+                             "[ETCRegionGenerator] Async exception chunk ("
+                             + coord.x() + "," + coord.z() + "): " + ex.getMessage());
+                         return null;
+                     });
+
+                // Optional fine-grained throttle (0 = off)
                 if (tickDelayMs > 0) {
-                    try {
-                        Thread.sleep(tickDelayMs);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
+                    try { Thread.sleep(tickDelayMs); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
                 }
             }
 
-            // Feed loop done — drain all in-flight chunks before marking finished
+            // Drain all in-flight completions before declaring done
             try {
                 semaphore.acquire(maxConcurrent);
             } catch (InterruptedException e) {
@@ -153,39 +182,6 @@ public final class GenerationTask {
     public void cancel() {
         state.set(TaskState.CANCELLED);
         if (feedTask != null) feedTask.cancel();
-    }
-
-    // -------------------------------------------------------------------------
-    //  Chunk generation (runs on region thread)
-    // -------------------------------------------------------------------------
-
-    private void generateChunk(ChunkArea.ChunkCoord coord, int total) {
-        try {
-            if (state.get() == TaskState.CANCELLED) {
-                semaphore.release();
-                return;
-            }
-
-            // Load / generate the chunk synchronously on the region thread
-            Chunk chunk = world.getChunkAt(coord.x(), coord.z());
-
-            // Force-save and unload to free memory
-            // (true = save before unload)
-            chunk.unload(true);
-
-            int done = completed.incrementAndGet();
-
-            // Broadcast progress at configured interval
-            broadcastProgressIfDue(done, total);
-
-        } catch (Exception ex) {
-            failed.incrementAndGet();
-            plugin.getLogger().log(Level.WARNING,
-                "[ETCRegionGenerator] Failed chunk (" + coord.x() + "," + coord.z() + "): "
-                + ex.getMessage());
-        } finally {
-            semaphore.release();
-        }
     }
 
     // -------------------------------------------------------------------------
