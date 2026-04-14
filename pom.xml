@@ -19,11 +19,6 @@
     </properties>
 
     <repositories>
-        <!-- Local Maven repo — contains our custom Folia API build -->
-        <repository>
-            <id>local</id>
-            <url>file://${user.home}/.m2/repository</url>
-        </repository>
         <repository>
             <id>papermc</id>
             <url>https://repo.papermc.io/repository/maven-public/</url>
@@ -35,7 +30,7 @@
         <dependency>
             <groupId>dev.folia</groupId>
             <artifactId>folia-api</artifactId>
-            <version>1.21.11-R0.1-SNAPSHOT</version>
+            <version>1.21.4-R0.1-SNAPSHOT</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>
