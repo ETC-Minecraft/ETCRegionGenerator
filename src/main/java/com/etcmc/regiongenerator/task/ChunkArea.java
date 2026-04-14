@@ -40,43 +40,36 @@ public final class ChunkArea {
     private List<ChunkCoord> buildSortedList() {
         List<ChunkCoord> list = new ArrayList<>();
 
-        int minCX = centerChunkX - radiusInChunks;
-        int maxCX = centerChunkX + radiusInChunks;
-        int minCZ = centerChunkZ - radiusInChunks;
-        int maxCZ = centerChunkZ + radiusInChunks;
-
-        // Iterate region by region for sequential disk writes
-        int minRX = minCX >> 5;   // region = chunk / 32
-        int maxRX = maxCX >> 5;
-        int minRZ = minCZ >> 5;
-        int maxRZ = maxCZ >> 5;
-
-        for (int rz = minRZ; rz <= maxRZ; rz++) {
-            for (int rx = minRX; rx <= maxRX; rx++) {
-                // All chunks in this region that fall within our radius
-                int regionChunkMinX = rx * 32;
-                int regionChunkMinZ = rz * 32;
-
-                for (int lz = 0; lz < 32; lz++) {
-                    for (int lx = 0; lx < 32; lx++) {
-                        int cx = regionChunkMinX + lx;
-                        int cz = regionChunkMinZ + lz;
-
-                        if (cx < minCX || cx > maxCX) continue;
-                        if (cz < minCZ || cz > maxCZ) continue;
-
-                        // Circular clip
-                        double dx = cx - centerChunkX;
-                        double dz = cz - centerChunkZ;
-                        if (dx * dx + dz * dz <= (double) radiusInChunks * radiusInChunks) {
-                            list.add(new ChunkCoord(cx, cz));
-                        }
-                    }
-                }
+        // Spiral order (center → outward rings).
+        // Each new chunk's neighbors are already generated or in-flight,
+        // minimising cascading internal loads inside Minecraft's chunk pipeline.
+        // Ring 0 = center chunk, ring N = chunks at Chebyshev distance N.
+        for (int ring = 0; ring <= radiusInChunks; ring++) {
+            if (ring == 0) {
+                addIfInCircle(list, 0, 0);
+                continue;
             }
+            // Top edge (z = -ring), left-to-right
+            for (int dx = -ring; dx <= ring; dx++)
+                addIfInCircle(list, dx, -ring);
+            // Right edge (x = +ring), top-to-bottom (skip corners already added)
+            for (int dz = -ring + 1; dz <= ring; dz++)
+                addIfInCircle(list, ring, dz);
+            // Bottom edge (z = +ring), right-to-left (skip corner)
+            for (int dx = ring - 1; dx >= -ring; dx--)
+                addIfInCircle(list, dx, ring);
+            // Left edge (x = -ring), bottom-to-top (skip both corners)
+            for (int dz = ring - 1; dz >= -ring + 1; dz--)
+                addIfInCircle(list, -ring, dz);
         }
 
         return Collections.unmodifiableList(list);
+    }
+
+    private void addIfInCircle(List<ChunkCoord> list, int dx, int dz) {
+        // Circular clip
+        if ((double) dx * dx + (double) dz * dz > (double) radiusInChunks * radiusInChunks) return;
+        list.add(new ChunkCoord(centerChunkX + dx, centerChunkZ + dz));
     }
 
     public List<ChunkCoord> getChunks() {

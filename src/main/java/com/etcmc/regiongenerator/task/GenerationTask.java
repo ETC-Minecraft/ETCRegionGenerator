@@ -113,20 +113,15 @@ public final class GenerationTask {
                 }
 
                 // -----------------------------------------------------------
-                // getChunkAtAsync feeds Paper's internal chunk-generation pool
-                // directly. Multiple chunks across ALL regions are generated
-                // concurrently — unlike RegionScheduler which serialises work
-                // to one thread per region.
+                // getChunkAtAsync — Paper's internal chunk-generation pool.
+                // Chunks are fed in spiral order (center-out) so neighbors are
+                // already generated when each new chunk is requested, minimising
+                // cascading internal loads.
                 // -----------------------------------------------------------
                 world.getChunkAtAsync(coord.x(), coord.z())
                      .thenAccept(chunk -> {
                          try {
-                             if (chunk == null) { failed.incrementAndGet(); return; }
-                             // Do NOT call chunk.unload() from here — on Folia that call
-                             // must happen on the region thread; calling it from a
-                             // CompletableFuture callback thread causes contention.
-                             // Folia's own eviction policy will save and unload the chunk
-                             // naturally once it is no longer in the active region window.
+                             if (state.get() == TaskState.CANCELLED) return;
                              int done = completed.incrementAndGet();
                              broadcastProgressIfDue(done, total);
                          } catch (Exception ex) {
@@ -141,9 +136,6 @@ public final class GenerationTask {
                      .exceptionally(ex -> {
                          failed.incrementAndGet();
                          semaphore.release();
-                         plugin.getLogger().log(Level.WARNING,
-                             "[ETCRegionGenerator] Async exception chunk ("
-                             + coord.x() + "," + coord.z() + "): " + ex.getMessage());
                          return null;
                      });
 
